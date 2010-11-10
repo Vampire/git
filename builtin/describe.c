@@ -209,39 +209,6 @@ static int compare_pt(const void *a_, const void *b_)
 	return 0;
 }
 
-static unsigned long finish_depth_computation(
-	struct commit_list **list,
-	struct possible_tag *best)
-{
-	unsigned long seen_commits = 0;
-	while (*list) {
-		struct commit *c = pop_commit(list);
-		struct commit_list *parents = c->parents;
-		seen_commits++;
-		if (c->object.flags & best->flag_within) {
-			struct commit_list *a = *list;
-			while (a) {
-				struct commit *i = a->item;
-				if (!(i->object.flags & best->flag_within))
-					break;
-				a = a->next;
-			}
-			if (!a)
-				break;
-		} else
-			best->depth++;
-		while (parents) {
-			struct commit *p = parents->item;
-			parse_commit(p);
-			if (!(p->object.flags & SEEN))
-				commit_list_insert_by_date(p, list);
-			p->object.flags |= c->object.flags;
-			parents = parents->next;
-		}
-	}
-	return seen_commits;
-}
-
 static void display_name(struct commit_name *n)
 {
 	if (n->prio == 2 && !n->tag) {
@@ -276,7 +243,6 @@ static void describe(const char *arg, int last_one)
 	struct commit_name *n;
 	struct possible_tag all_matches[MAX_TAGS];
 	unsigned int match_cnt = 0, annotated_cnt = 0, cur_match;
-	unsigned long seen_commits = 0;
 	unsigned int unannotated_cnt = 0;
 
 	if (get_oid(arg, &oid))
@@ -319,10 +285,11 @@ static void describe(const char *arg, int last_one)
 	list = NULL;
 	cmit->object.flags = SEEN;
 	commit_list_insert(cmit, &list);
+	list->depth = 0;
 	while (list) {
+		unsigned long depth = list->depth;
 		struct commit *c = pop_commit(&list);
 		struct commit_list *parents = c->parents;
-		seen_commits++;
 		n = c->util;
 		if (n) {
 			if (!tags && !all && n->prio < 2) {
@@ -330,7 +297,7 @@ static void describe(const char *arg, int last_one)
 			} else if (match_cnt < max_candidates) {
 				struct possible_tag *t = &all_matches[match_cnt++];
 				t->name = n;
-				t->depth = seen_commits - 1;
+				t->depth = depth;
 				t->flag_within = 1u << match_cnt;
 				t->found_order = match_cnt;
 				c->object.flags |= t->flag_within;
@@ -342,11 +309,6 @@ static void describe(const char *arg, int last_one)
 				break;
 			}
 		}
-		for (cur_match = 0; cur_match < match_cnt; cur_match++) {
-			struct possible_tag *t = &all_matches[cur_match];
-			if (!(c->object.flags & t->flag_within))
-				t->depth++;
-		}
 		if (annotated_cnt && !list) {
 			if (debug)
 				fprintf(stderr, _("finished search at %s\n"),
@@ -356,8 +318,10 @@ static void describe(const char *arg, int last_one)
 		while (parents) {
 			struct commit *p = parents->item;
 			parse_commit(p);
-			if (!(p->object.flags & SEEN))
-				commit_list_insert_by_date(p, &list);
+			if (!(p->object.flags & SEEN)) {
+				struct commit_list *cl = commit_list_insert_by_date(p, &list);
+				cl->depth = depth + 1;
+			}
 			p->object.flags |= c->object.flags;
 			parents = parents->next;
 
@@ -387,11 +351,8 @@ static void describe(const char *arg, int last_one)
 
 	QSORT(all_matches, match_cnt, compare_pt);
 
-	if (gave_up_on) {
+	if (gave_up_on)
 		commit_list_insert_by_date(gave_up_on, &list);
-		seen_commits--;
-	}
-	seen_commits += finish_depth_computation(&list, &all_matches[0]);
 	free_commit_list(list);
 
 	if (debug) {
@@ -410,7 +371,6 @@ static void describe(const char *arg, int last_one)
 				label_width, _(prio_names[t->name->prio]),
 				t->depth, t->name->path);
 		}
-		fprintf(stderr, _("traversed %lu commits\n"), seen_commits);
 		if (gave_up_on) {
 			fprintf(stderr,
 				_("more than %i tags found; listed %i most recent\n"
