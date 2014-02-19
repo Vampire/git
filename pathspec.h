@@ -53,6 +53,7 @@ struct pathspec {
 		} *attr_match;
 		struct attr_check *attr_check;
 	} *items;
+	struct pathspec_trie *trie;
 };
 
 #define GUARD_PATHSPEC(ps, mask) \
