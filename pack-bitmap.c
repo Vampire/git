@@ -477,6 +477,25 @@ static int should_include(struct commit *commit, void *_data)
 	return 1;
 }
 
+static int add_commit_to_bitmap(struct bitmap **base, struct commit *commit)
+{
+	khiter_t pos = kh_get_sha1(bitmap_git.bitmaps, commit->object.oid.hash);
+
+	if (pos < kh_end(bitmap_git.bitmaps)) {
+		struct stored_bitmap *st = kh_value(bitmap_git.bitmaps, pos);
+		struct ewah_bitmap *or_with = lookup_stored_bitmap(st);
+
+		if (*base == NULL)
+			*base = ewah_to_bitmap(or_with);
+		else
+			bitmap_or_ewah(*base, or_with);
+
+		return 1;
+	}
+
+	return 0;
+}
+
 static struct bitmap *find_objects(struct rev_info *revs,
 				   struct object_list *roots,
 				   struct bitmap *seen)
@@ -498,21 +517,10 @@ static struct bitmap *find_objects(struct rev_info *revs,
 		struct object *object = roots->item;
 		roots = roots->next;
 
-		if (object->type == OBJ_COMMIT) {
-			khiter_t pos = kh_get_sha1(bitmap_git.bitmaps, object->oid.hash);
-
-			if (pos < kh_end(bitmap_git.bitmaps)) {
-				struct stored_bitmap *st = kh_value(bitmap_git.bitmaps, pos);
-				struct ewah_bitmap *or_with = lookup_stored_bitmap(st);
-
-				if (base == NULL)
-					base = ewah_to_bitmap(or_with);
-				else
-					bitmap_or_ewah(base, or_with);
-
-				object->flags |= SEEN;
-				continue;
-			}
+		if (object->type == OBJ_COMMIT &&
+			add_commit_to_bitmap(&base, (struct commit *)object)) {
+			object->flags |= SEEN;
+			continue;
 		}
 
 		object_list_insert(object, &not_mapped);
