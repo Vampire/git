@@ -20,6 +20,7 @@
 #include "cache-tree.h"
 #include "bisect.h"
 #include "argv-array.h"
+#include "pack-bitmap.h"
 
 volatile show_early_output_fn_t show_early_output;
 
@@ -3341,6 +3342,11 @@ void revision_ahead_behind(struct commit *ours, struct commit *theirs, int *num_
 		*num_theirs = *num_ours = 0;
 		return;
 	}
+
+	/* fast path: if bitmaps are available, we can greatly speed up
+	 * the ahead-behind calculation by generating traversal bitmaps */
+	if (!bitmap_ahead_behind(ours, theirs, num_ours, num_theirs))
+		return;
 
 	/* Run "rev-list --left-right ours...theirs" internally... */
 	argv_array_push(&argv, ""); /* ignored */
