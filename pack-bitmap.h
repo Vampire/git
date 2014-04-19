@@ -3,6 +3,7 @@
 
 #include "ewah/ewok.h"
 #include "khash.h"
+#include "pack.h"
 #include "pack-objects.h"
 
 struct bitmap_disk_header {
@@ -34,6 +35,7 @@ typedef int (*show_reachable_fn)(
 	struct packed_git *found_pack,
 	off_t found_offset);
 
+int check_bitmap_git(void);
 int prepare_bitmap_git(void);
 void count_bitmap_commit_list(uint32_t *commits, uint32_t *trees, uint32_t *blobs, uint32_t *tags);
 void traverse_bitmap_commit_list(show_reachable_fn show_reachable);

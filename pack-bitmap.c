@@ -86,8 +86,8 @@ static struct bitmap_index {
 	/* Version of the bitmap index */
 	unsigned int version;
 
-	unsigned loaded : 1;
-
+	/* whether we've tried and failed to load the bitmaps */
+	int failed_to_load;
 } bitmap_git;
 
 static struct ewah_bitmap *lookup_stored_bitmap(struct stored_bitmap *st)
@@ -301,7 +301,10 @@ static int open_pack_bitmap_1(struct packed_git *packfile)
 
 static int load_pack_bitmap(void)
 {
-	assert(bitmap_git.map && !bitmap_git.loaded);
+	assert(bitmap_git.map);
+	
+	if (bitmap_git.bitmaps)
+		return 0;
 
 	bitmap_git.bitmaps = kh_init_sha1();
 	bitmap_git.ext_index.positions = kh_init_sha1_pos();
@@ -316,13 +319,20 @@ static int load_pack_bitmap(void)
 	if (load_bitmap_entries_v1(&bitmap_git) < 0)
 		goto failed;
 
-	bitmap_git.loaded = 1;
 	return 0;
 
 failed:
 	munmap(bitmap_git.map, bitmap_git.map_size);
 	bitmap_git.map = NULL;
 	bitmap_git.map_size = 0;
+
+	kh_destroy_sha1(bitmap_git.bitmaps);
+	bitmap_git.bitmaps = NULL;
+
+	kh_destroy_sha1_pos(bitmap_git.ext_index.positions);
+	bitmap_git.ext_index.positions = NULL;
+
+	bitmap_git.failed_to_load = 1;
 	return -1;
 }
 
@@ -331,7 +341,8 @@ static int open_pack_bitmap(void)
 	struct packed_git *p;
 	int ret = -1;
 
-	assert(!bitmap_git.map && !bitmap_git.loaded);
+	if (bitmap_git.map)
+		return 0;
 
 	prepare_packed_git();
 	for (p = packed_git; p; p = p->next) {
@@ -339,18 +350,26 @@ static int open_pack_bitmap(void)
 			ret = 0;
 	}
 
+	if (ret < 0)
+		bitmap_git.failed_to_load = 1;
+
 	return ret;
+}
+
+int check_bitmap_git(void)
+{
+	if (bitmap_git.failed_to_load)
+		return -1;
+
+	return open_pack_bitmap();
 }
 
 int prepare_bitmap_git(void)
 {
-	if (bitmap_git.loaded)
-		return 0;
+	if (check_bitmap_git() < 0)
+		return -1;
 
-	if (!open_pack_bitmap())
-		return load_pack_bitmap();
-
-	return -1;
+	return load_pack_bitmap();
 }
 
 struct include_data {
@@ -670,12 +689,10 @@ int prepare_bitmap_walk(struct rev_info *revs)
 	struct bitmap *wants_bitmap = NULL;
 	struct bitmap *haves_bitmap = NULL;
 
-	if (!bitmap_git.loaded) {
-		/* try to open a bitmapped pack, but don't parse it yet
-		 * because we may not need to use it */
-		if (open_pack_bitmap() < 0)
-			return -1;
-	}
+	/* try to open a bitmapped pack, but don't parse it yet
+	 * because we may not need to use it */
+	if (check_bitmap_git() < 0)
+		return -1;
 
 	for (i = 0; i < pending_nr; ++i) {
 		struct object *object = pending_e[i].item;
@@ -719,7 +736,7 @@ int prepare_bitmap_walk(struct rev_info *revs)
 	 * from disk. this is the point of no return; after this the rev_list
 	 * becomes invalidated and we must perform the revwalk through bitmaps
 	 */
-	if (!bitmap_git.loaded && load_pack_bitmap() < 0)
+	if (prepare_bitmap_git() < 0)
 		return -1;
 
 	revs->pending.nr = 0;
