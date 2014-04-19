@@ -256,6 +256,8 @@ extern char *get_revision_mark(const struct rev_info *revs,
 extern void put_revision_mark(const struct rev_info *revs,
 			      const struct commit *commit);
 
+extern void revision_ahead_behind(struct commit *tip, struct commit *base, int *ahead, int *behind);
+
 extern void mark_parents_uninteresting(struct commit *commit);
 extern void mark_tree_uninteresting(struct tree *tree);
 
