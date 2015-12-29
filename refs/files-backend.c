@@ -2162,21 +2162,6 @@ static int commit_ref_update(struct files_ref_store *refs,
 	return 0;
 }
 
-static int create_ref_symlink(struct ref_lock *lock, const char *target)
-{
-	int ret = -1;
-#ifndef NO_SYMLINK_HEAD
-	char *ref_path = get_locked_file_path(lock->lk);
-	unlink(ref_path);
-	ret = symlink(target, ref_path);
-	free(ref_path);
-
-	if (ret)
-		fprintf(stderr, "no symlink - falling back to symbolic ref\n");
-#endif
-	return ret;
-}
-
 static void update_symref_reflog(struct files_ref_store *refs,
 				 struct ref_lock *lock, const char *refname,
 				 const char *target, const char *logmsg)
@@ -2197,11 +2182,6 @@ static int create_symref_locked(struct files_ref_store *refs,
 				struct ref_lock *lock, const char *refname,
 				const char *target, const char *logmsg)
 {
-	if (prefer_symlink_refs && !create_ref_symlink(lock, target)) {
-		update_symref_reflog(refs, lock, refname, target, logmsg);
-		return 0;
-	}
-
 	if (!fdopen_lock_file(lock->lk, "w"))
 		return error("unable to fdopen %s: %s",
 			     lock->lk->tempfile.filename.buf, strerror(errno));
@@ -2216,18 +2196,6 @@ static int create_symref_locked(struct files_ref_store *refs,
 	return 0;
 }
 
-static const char symlink_deprecation_warning[] =
-"The core.preferSymlinkRefs configuration option has been\n"
-"deprecated and will be removed in a future version of Git. If your\n"
-"workflow or script depends on '.git/HEAD' being a symbolic link,\n"
-"it should be adjusted to use:\n"
-"\n"
-"        git rev-parse HEAD\n"
-"\n"
-"        git rev-parse --symbolic-full-name HEAD\n"
-"\n"
-"to get the sha1 or branch name, respectively.";
-
 static int files_create_symref(struct ref_store *ref_store,
 			       const char *refname, const char *target,
 			       const char *logmsg)
@@ -2237,9 +2205,6 @@ static int files_create_symref(struct ref_store *ref_store,
 	struct strbuf err = STRBUF_INIT;
 	struct ref_lock *lock;
 	int ret;
-
-	if (prefer_symlink_refs)
-		warning("%s", symlink_deprecation_warning);
 
 	lock = lock_ref_sha1_basic(refs, refname, NULL,
 				   NULL, NULL, REF_NODEREF, NULL,

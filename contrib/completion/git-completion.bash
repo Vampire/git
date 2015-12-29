@@ -2417,7 +2417,6 @@ _git_config ()
 		core.packedGitLimit
 		core.packedGitWindowSize
 		core.pager
-		core.preferSymlinkRefs
 		core.preloadindex
 		core.quotepath
 		core.repositoryFormatVersion
