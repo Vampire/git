@@ -405,7 +405,9 @@ static void print_ref_list(struct ref_filter *filter, struct ref_sorting *sortin
 
 	if (!format)
 		format = to_free = build_format(filter, maxwidth, remote_prefix);
-	verify_ref_format(format);
+
+	if (verify_ref_format("%(refname)%(symref)") < 0)
+		die("BUG: unable to parse our internal format");
 
 	ref_array_sort(sorting, &array);
 
