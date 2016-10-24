@@ -866,6 +866,7 @@ struct transport *transport_get(struct remote *remote, const char *url)
 			ret->smart_options->receivepack = remote->receivepack;
 	}
 
+	ret->early_capabilities = 1;
 	argv_array_init(&ret->advertise_prefixes);
 
 	return ret;
