@@ -668,3 +668,11 @@ int xgethostname(char *buf, size_t len)
 		buf[len - 1] = 0;
 	return ret;
 }
+
+#ifndef O_NOFOLLOW
+#define O_NOFOLLOW 0
+#endif
+int open_nofollow(const char *path, int flags)
+{
+	return open(path, flags | O_NOFOLLOW);
+}
