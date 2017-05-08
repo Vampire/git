@@ -86,8 +86,8 @@ static struct bitmap_index {
 	/* Version of the bitmap index */
 	unsigned int version;
 
-	unsigned loaded : 1;
-
+	/* whether we've tried and failed to load the bitmaps */
+	int failed_to_load;
 } bitmap_git;
 
 static struct ewah_bitmap *lookup_stored_bitmap(struct stored_bitmap *st)
@@ -301,7 +301,10 @@ static int open_pack_bitmap_1(struct packed_git *packfile)
 
 static int load_pack_bitmap(void)
 {
-	assert(bitmap_git.map && !bitmap_git.loaded);
+	assert(bitmap_git.map);
+	
+	if (bitmap_git.bitmaps)
+		return 0;
 
 	bitmap_git.bitmaps = kh_init_sha1();
 	bitmap_git.ext_index.positions = kh_init_sha1_pos();
@@ -316,13 +319,20 @@ static int load_pack_bitmap(void)
 	if (load_bitmap_entries_v1(&bitmap_git) < 0)
 		goto failed;
 
-	bitmap_git.loaded = 1;
 	return 0;
 
 failed:
 	munmap(bitmap_git.map, bitmap_git.map_size);
 	bitmap_git.map = NULL;
 	bitmap_git.map_size = 0;
+
+	kh_destroy_sha1(bitmap_git.bitmaps);
+	bitmap_git.bitmaps = NULL;
+
+	kh_destroy_sha1_pos(bitmap_git.ext_index.positions);
+	bitmap_git.ext_index.positions = NULL;
+
+	bitmap_git.failed_to_load = 1;
 	return -1;
 }
 
@@ -331,7 +341,8 @@ static int open_pack_bitmap(void)
 	struct packed_git *p;
 	int ret = -1;
 
-	assert(!bitmap_git.map && !bitmap_git.loaded);
+	if (bitmap_git.map)
+		return 0;
 
 	prepare_packed_git();
 	for (p = packed_git; p; p = p->next) {
@@ -339,18 +350,26 @@ static int open_pack_bitmap(void)
 			ret = 0;
 	}
 
+	if (ret < 0)
+		bitmap_git.failed_to_load = 1;
+
 	return ret;
+}
+
+int check_bitmap_git(void)
+{
+	if (bitmap_git.failed_to_load)
+		return -1;
+
+	return open_pack_bitmap();
 }
 
 int prepare_bitmap_git(void)
 {
-	if (bitmap_git.loaded)
-		return 0;
+	if (check_bitmap_git() < 0)
+		return -1;
 
-	if (!open_pack_bitmap())
-		return load_pack_bitmap();
-
-	return -1;
+	return load_pack_bitmap();
 }
 
 struct include_data {
@@ -477,6 +496,25 @@ static int should_include(struct commit *commit, void *_data)
 	return 1;
 }
 
+static int add_commit_to_bitmap(struct bitmap **base, struct commit *commit)
+{
+	khiter_t pos = kh_get_sha1(bitmap_git.bitmaps, commit->object.oid.hash);
+
+	if (pos < kh_end(bitmap_git.bitmaps)) {
+		struct stored_bitmap *st = kh_value(bitmap_git.bitmaps, pos);
+		struct ewah_bitmap *or_with = lookup_stored_bitmap(st);
+
+		if (*base == NULL)
+			*base = ewah_to_bitmap(or_with);
+		else
+			bitmap_or_ewah(*base, or_with);
+
+		return 1;
+	}
+
+	return 0;
+}
+
 static struct bitmap *find_objects(struct rev_info *revs,
 				   struct object_list *roots,
 				   struct bitmap *seen)
@@ -498,21 +536,10 @@ static struct bitmap *find_objects(struct rev_info *revs,
 		struct object *object = roots->item;
 		roots = roots->next;
 
-		if (object->type == OBJ_COMMIT) {
-			khiter_t pos = kh_get_sha1(bitmap_git.bitmaps, object->oid.hash);
-
-			if (pos < kh_end(bitmap_git.bitmaps)) {
-				struct stored_bitmap *st = kh_value(bitmap_git.bitmaps, pos);
-				struct ewah_bitmap *or_with = lookup_stored_bitmap(st);
-
-				if (base == NULL)
-					base = ewah_to_bitmap(or_with);
-				else
-					bitmap_or_ewah(base, or_with);
-
-				object->flags |= SEEN;
-				continue;
-			}
+		if (object->type == OBJ_COMMIT &&
+			add_commit_to_bitmap(&base, (struct commit *)object)) {
+			object->flags |= SEEN;
+			continue;
 		}
 
 		object_list_insert(object, &not_mapped);
@@ -662,12 +689,10 @@ int prepare_bitmap_walk(struct rev_info *revs)
 	struct bitmap *wants_bitmap = NULL;
 	struct bitmap *haves_bitmap = NULL;
 
-	if (!bitmap_git.loaded) {
-		/* try to open a bitmapped pack, but don't parse it yet
-		 * because we may not need to use it */
-		if (open_pack_bitmap() < 0)
-			return -1;
-	}
+	/* try to open a bitmapped pack, but don't parse it yet
+	 * because we may not need to use it */
+	if (check_bitmap_git() < 0)
+		return -1;
 
 	for (i = 0; i < pending_nr; ++i) {
 		struct object *object = pending_e[i].item;
@@ -711,7 +736,7 @@ int prepare_bitmap_walk(struct rev_info *revs)
 	 * from disk. this is the point of no return; after this the rev_list
 	 * becomes invalidated and we must perform the revwalk through bitmaps
 	 */
-	if (!bitmap_git.loaded && load_pack_bitmap() < 0)
+	if (prepare_bitmap_git() < 0)
 		return -1;
 
 	revs->pending.nr = 0;
@@ -1064,5 +1089,113 @@ int rebuild_existing_bitmaps(struct packing_data *mapping,
 
 	free(reposition);
 	bitmap_free(rebuild);
+	return 0;
+}
+
+struct bitmap *find_commit_bitmap(struct rev_info *revs, struct commit *commit)
+{
+	struct bitmap *result = NULL;
+
+	if (!add_commit_to_bitmap(&result, commit)) {
+		struct include_data incdata;
+
+		incdata.base = result = bitmap_new();
+		incdata.seen = NULL;
+
+		add_pending_object(revs, (struct object *)commit, "");
+
+		revs->include_check = should_include;
+		revs->include_check_data = &incdata;
+
+		if (prepare_revision_walk(revs))
+			die("revision walk setup failed");
+
+		while (get_revision(revs) != NULL) {
+			/* do nothing */
+		}
+
+		reset_revision_walk();
+	}
+
+	return result;
+}
+
+struct bitmap *find_cached_commit_bitmap(struct rev_info *revs, struct commit *commit)
+{
+	static struct decoration cache;
+	struct bitmap *b;
+
+	b = lookup_decoration(&cache, &commit->object);
+	if (!b) {
+		b = find_commit_bitmap(revs, commit);
+		add_decoration(&cache, &commit->object, b);
+	}
+	return b;
+}
+
+static struct bitmap *get_commit_filter(void)
+{
+	static struct bitmap *commit_filter = NULL;
+	static uint32_t i = 0;
+
+	struct object **objects = bitmap_git.ext_index.objects;
+	uint32_t count = bitmap_git.ext_index.count;
+
+	if (!commit_filter)
+		commit_filter = ewah_to_bitmap(bitmap_git.commits);
+
+	for (; i < count; i++) {
+		if (objects[i]->type == OBJ_COMMIT)
+			bitmap_set(commit_filter, bitmap_git.pack->num_objects + i);
+	}
+
+	return commit_filter;
+}
+
+static int find_difference(struct bitmap *a, struct bitmap *b, struct bitmap *filter)
+{
+	size_t i, common_len;
+	size_t a_len = a->word_alloc;
+	size_t b_len = b->word_alloc;
+
+	int bits_set = 0;
+
+	if (a_len > filter->word_alloc)
+		a_len = filter->word_alloc;
+
+	if (b_len > filter->word_alloc)
+		b_len = filter->word_alloc;
+
+	common_len = (a_len < b_len) ? a_len : b_len;
+
+	for (i = 0; i < common_len; ++i) {
+		eword_t w = a->words[i] & ~b->words[i] & filter->words[i];
+		if (w) bits_set += ewah_bit_popcount64(w);
+	}
+
+	for (; i < a_len; ++i) {
+		eword_t w = a->words[i] & filter->words[i];
+		if (w) bits_set += ewah_bit_popcount64(w);
+	}
+
+	return bits_set;
+}
+
+int bitmap_ahead_behind(struct commit *tip, struct commit *base, int *ahead, int *behind)
+{
+	struct rev_info revs;
+	struct bitmap *base_bitmap, *tip_bitmap, *commit_filter;
+
+	if (prepare_bitmap_git() < 0)
+		return -1;
+
+	init_revisions(&revs, NULL);
+	base_bitmap = find_cached_commit_bitmap(&revs, base);
+	tip_bitmap = find_cached_commit_bitmap(&revs, tip);
+	commit_filter = get_commit_filter();
+
+	*ahead = find_difference(tip_bitmap, base_bitmap, commit_filter);
+	*behind = find_difference(base_bitmap, tip_bitmap, commit_filter);
+
 	return 0;
 }
