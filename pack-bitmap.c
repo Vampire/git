@@ -83,6 +83,9 @@ static struct bitmap_index {
 	/* Bitmap result of the last performed walk */
 	struct bitmap *result;
 
+	/* "have" bitmap from the last performed walk */
+	struct bitmap *haves;
+
 	/* Version of the bitmap index */
 	unsigned int version;
 
@@ -762,8 +765,8 @@ int prepare_bitmap_walk(struct rev_info *revs)
 		bitmap_and_not(wants_bitmap, haves_bitmap);
 
 	bitmap_git.result = wants_bitmap;
+	bitmap_git.haves = haves_bitmap;
 
-	bitmap_free(haves_bitmap);
 	return 0;
 }
 
@@ -1198,4 +1201,29 @@ int bitmap_ahead_behind(struct commit *tip, struct commit *base, int *ahead, int
 	*behind = find_difference(base_bitmap, tip_bitmap, commit_filter);
 
 	return 0;
+}
+
+int bitmap_have(const unsigned char *sha1, uint32_t *name_hash, off_t *offset)
+{
+	struct revindex_entry *entry;
+	int pos;
+
+	if (!bitmap_git.bitmaps)
+		return 0; /* no bitmap loaded */
+	if (!bitmap_git.haves)
+		return 0; /* walk had no "haves" */
+
+	pos = bitmap_position_packfile(sha1);
+	if (pos < 0)
+		return 0;
+
+	entry = &bitmap_git.pack->revindex[pos];
+	*offset = entry->offset;
+	if (bitmap_git.hashes)
+		*name_hash = ntohl(bitmap_git.hashes[entry->nr]);
+	else
+		*name_hash = 0;
+
+
+	return bitmap_get(bitmap_git.haves, pos);
 }
