@@ -21,6 +21,8 @@
 #include "bisect.h"
 #include "argv-array.h"
 #include "pack-bitmap.h"
+#include "transport.h"
+#include "remote.h"
 
 volatile show_early_output_fn_t show_early_output;
 
@@ -1291,6 +1293,13 @@ void add_index_objects_to_pending(struct rev_info *revs, unsigned flags)
 	}
 }
 
+static void handle_one_alternate_ref(const char *refname,
+				     const struct object_id *oid,
+				     void *data)
+{
+	handle_one_ref(refname, oid, 0, data);
+}
+
 static int add_parents_only(struct rev_info *revs, const char *arg_, int flags,
 			    int exclude_parent)
 {
@@ -1665,6 +1674,7 @@ static int handle_revision_opt(struct rev_info *revs, int argc, const char **arg
 	    !strcmp(arg, "--no-walk") || !strcmp(arg, "--do-walk") ||
 	    !strcmp(arg, "--bisect") || starts_with(arg, "--glob=") ||
 	    !strcmp(arg, "--indexed-objects") ||
+	    !strcmp(arg, "--alternate-refs") ||
 	    starts_with(arg, "--exclude=") ||
 	    starts_with(arg, "--branches=") || starts_with(arg, "--tags=") ||
 	    starts_with(arg, "--remotes=") || starts_with(arg, "--no-walk="))
@@ -2125,6 +2135,11 @@ static int handle_revision_pseudo_opt(const char *submodule,
 		add_reflogs_to_pending(revs, *flags);
 	} else if (!strcmp(arg, "--indexed-objects")) {
 		add_index_objects_to_pending(revs, *flags);
+	} else if (!strcmp(arg, "--alternate-refs")) {
+		struct all_refs_cb cb;
+		init_all_refs_cb(&cb, revs, *flags);
+		for_each_alternate_ref(handle_one_alternate_ref, &cb);
+		clear_ref_exclusion(&revs->ref_excludes);
 	} else if (!strcmp(arg, "--not")) {
 		*flags ^= UNINTERESTING | BOTTOM;
 	} else if (!strcmp(arg, "--no-walk")) {
